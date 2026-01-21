@@ -38,7 +38,8 @@ app.use(rateLimit({
 
  
 const allowedOrigins = [
-  process.env.FRONTEND_URL
+  process.env.FRONTEND_URL,
+  "https://risk-management-system-git-main-ankit-gargs-projects-9478362f.vercel.app",
 ].filter(Boolean); // Ye null ya undefined values ko remove kar dega
 
 const corsOptions = {
