@@ -142,4 +142,5 @@ export const logoutAdmin = asyncHandler(async (req, res) => {
 
  export const registerAdmin = asyncHandler(async (req, res) => {
   //the logic goes here
+  
  });

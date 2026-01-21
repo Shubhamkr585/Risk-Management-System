@@ -36,27 +36,16 @@ app.use(rateLimit({
 // COR CONFIGURATION 
 // --- SECURE PROD READY CORS SETUP ---
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) {
-      return callback(null, true);
-    }
-    const allowedDomains = [
-      process.env.FRONTEND_URL 
-    ];
-    const isAllowed = allowedDomains.includes(origin) || origin.endsWith('.vercel.app');
+ 
+const allowedOrigins = [
+  process.env.FRONTEND_URL
+].filter(Boolean); // Ye null ya undefined values ko remove kar dega
 
-    if (isAllowed) {
-      callback(null, true); //  Entry Granted
-    } else {
-      console.log(`🚫 CORS Blocked request from: ${origin}`);
-      callback(new Error('Not allowed by CORS')); //Get Out
-    }
-  },
-  credentials: true, 
-  
+const corsOptions = {
+  origin: allowedOrigins,
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
 };
 
 app.use(cors(corsOptions));
