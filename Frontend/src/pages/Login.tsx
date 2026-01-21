@@ -37,7 +37,7 @@ const Login = () => {
         title: "Welcome back!",
         description: `Successfully logged into Return Risk Analyzer.`,
       });
-      navigate("/dashboard");
+      window.location.href = "/dashboard";
     } catch (err: any) {
       const errorMessage = err.message || "An unexpected error occurred.";
       toast({
