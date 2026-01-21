@@ -45,7 +45,7 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => {
     // Return just the data property to simplify usage
-    return response; 
+    return response.data || response.data; 
   },
   async (error) => {
     const originalRequest = error.config;

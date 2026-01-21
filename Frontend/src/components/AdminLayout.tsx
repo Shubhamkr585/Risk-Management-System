@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { NavLink, useNavigate, useLocation, Outlet } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import ThemeToggle from "@/components/ThemeToggle";
-
+import { useAuth } from "../context/AuthContext";
 import {
   LayoutDashboard,
   Users,
@@ -18,9 +18,10 @@ import { useToast } from "@/hooks/use-toast";
 import { refreshAccessToken, logout } from "../lib/api"; 
 
 const AdminLayout = () => {
+
   // State to control sidebar visibility
+  const { user, isAuthenticated, loading, setUser, setIsAuthenticated} = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [adminUser, setAdminUser] = useState<{ name: string; role: string } | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState("w-64");
   const navigate = useNavigate();
@@ -87,42 +88,27 @@ const AdminLayout = () => {
   }, []);
 
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const res = await refreshAccessToken();
-        console.log(res);
-        
-        const  admin  = res.data; 
+    if (!loading && !isAuthenticated) {
+      navigate("/login");
+    }
+  }, [loading, isAuthenticated, navigate]);
 
-        if (admin && admin.username && admin.role) {
-            setAdminUser({ name: admin.username, role: admin.role });
-        } else {
-            console.error("Authentication check failed: Admin data missing from refresh response.");
-            throw new Error("Admin data not found. Please log in again.");
-        }
+  // UI Check: Jab tak verification chal raha hai, tabhi loading dikhao
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center min-h-screen bg-background text-foreground">
+        <p>Loading...</p> 
+      </div>
+    );
+  }
 
-      } catch (err: any) {
-        console.error("Authentication check failed:", err.message); 
-        
-        toast({
-            title: "Authentication required",
-            description: err.message || "Please log in to continue.",
-            variant: "destructive",
-        });
-        
-        setAdminUser(null);
-        navigate("/login");
-      }
-    };
-
-    checkAuth();
-
-  }, [navigate, toast]);
+  // Agar user nahi hai, toh render na karein (redirect ho jayega)
+  if (!user) return null;
 
   const handleLogout = async () => {
     try {
       await logout();
-      setAdminUser(null); 
+      setUser(null); 
       toast({
         title: "Logged out successfully",
         description: "You have been signed out of the system.",
@@ -148,14 +134,6 @@ const AdminLayout = () => {
   ];
 
   const isActive = (path: string) => location.pathname === path;
-
-  if (!adminUser) {
-    return (
-      <div className="flex justify-center items-center min-h-screen bg-background text-foreground">
-        <p>Loading admin panel...</p>
-      </div>
-    );
-  }
 
   // Main layout rendering
   return (
@@ -217,8 +195,8 @@ const AdminLayout = () => {
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-border bg-card rounded-br-lg"> {/* Added bg-card and rounded-br-lg for consistency */}
           {isSidebarOpen && (
             <div className="mb-3">
-              <p className={`${sidebarWidth === "w-44" || sidebarWidth === "w-48" ? "text-xs" : "text-sm"} font-medium text-foreground truncate`}>{adminUser.name}</p>
-              <p className="text-xs text-muted-foreground truncate">{adminUser.role}</p>
+              <p className={`${sidebarWidth === "w-44" || sidebarWidth === "w-48" ? "text-xs" : "text-sm"} font-medium text-foreground truncate`}>{user.name}</p>
+              <p className="text-xs text-muted-foreground truncate">{user.role}</p>
             </div>
           )}
           <Button
@@ -257,7 +235,7 @@ const AdminLayout = () => {
             <div className="flex items-center gap-4">
   <div className="text-right">
     <p className="text-sm text-muted-foreground">Welcome back,</p>
-    <p className="font-medium text-foreground">{adminUser.name}</p>
+    <p className="font-medium text-foreground">{user.username}</p>
   </div>
   <ThemeToggle />
 </div>
@@ -275,3 +253,5 @@ const AdminLayout = () => {
 };
 
 export default AdminLayout;
+
+  

@@ -11,6 +11,7 @@ type User = {
 type AuthContextType = {
   user: User | null;
   isAuthenticated: boolean;
+  loading: boolean;
   setUser: (user: User | null) => void;
   setIsAuthenticated: (auth: boolean) => void;
   logout: () => void;
@@ -21,19 +22,31 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-
-  // On mount, restore user and auth state from backend
   useEffect(() => {
-    refreshAccessToken()
-      .then((res) => {
-        setUser(res.data); // Set user info from backend response
-        setIsAuthenticated(true);
-      })
-      .catch(() => {
+    const initAuth = async () => {
+      try {
+        const res: any = await refreshAccessToken();
+        
+        // Agar response mein user data hai (api.js ke logic ke according)
+        // Data nesting check: res.data ya res.data.data
+        const userData = res?.data?.data || res?.data || res;
+
+        if (userData && userData.username) {
+          setUser(userData); 
+          setIsAuthenticated(true);
+        }
+      } catch (error) {
+        // Localhost par 401 aana normal hai agar session expired hai
         setUser(null);
         setIsAuthenticated(false);
-      });
+      } finally {
+        setLoading(false); // Ye line sabse zaroori hai
+      }
+    };
+
+    initAuth();
   }, []);
 
   const logout = () => {
@@ -42,7 +55,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, setUser, setIsAuthenticated, logout }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, loading, setUser, setIsAuthenticated, logout }}>
       {children}
     </AuthContext.Provider>
   );

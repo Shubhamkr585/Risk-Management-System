@@ -1,3 +1,4 @@
+import ThemeToggle from "@/components/ThemeToggle"; // Assuming ThemeToggle is correctly imported and used elsewhere if needed
 import { useState } from "react";
 import {
   Card,
@@ -8,163 +9,118 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Progress } from "@/components/ui/progress";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Users,
+  TrendingDown,
+  AlertTriangle,
+  DollarSign,
+  ArrowUpRight,
+  ArrowDownRight,
+  Eye,
+  Filter,
+} from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { getDashboardData } from "../lib/api";
+import { useNavigate } from "react-router-dom";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogFooter,
-  DialogDescription
+  DialogHeader as DialogHeaderUI,
+  DialogTitle as DialogTitleUI,
+  DialogDescription as DialogDescriptionUI,
+  DialogFooter as DialogFooterUI,
 } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import {
-  Search,
-  Filter,
-  Download,
-  Eye,
-  AlertTriangle,
-  TrendingUp,
-  TrendingDown,
-  Calendar
-} from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
-import { getCustomers } from "../lib/api";
-import { useToast } from "@/hooks/use-toast";
 
-
-interface CustomerData {
-  id: string; // Mongoose _id
-  customerId: string;
-  name: string;
-  email: string;
-  address: string;
-  totalOrders: number;
-  totalReturns: number;
-  returnRate: number; // Percentage, e.g., 18.3
-  riskScore: number; // 0-100
-  riskLevel: 'Low' | 'Medium' | 'High'; // Matches backend string
-  totalSpent: number; // Simulated
-  lastReturnDate?: string; // Date string
-  createdAt: string;
-  updatedAt: string;
-  avgReturnTime?: number; 
-  commonReasons?: string[]; 
-  flags?: string[]; 
+interface Stat {
+  title: string;
+  value: string;
+  change: string;
+  trend: 'up' | 'down';
+  icon: string;
+  color: string;
 }
 
-interface ApiResponseWrapper {
+interface CustomerData {
+  id: string;
+  name: string;
+  riskScore: number;
+  returns: number;
+  totalOrders: number;
+}
+
+interface RecentReturn {
+  id: string;
+  customer: string;
+  product: string;
+  reason: string;
+  riskScore: number;
+  time: string; // This will be a formatted string like "X hours ago"
+}
+
+interface RiskDistributionItem {
+  label: string;
+  count: string;
+  percentage: string;
+  color: string;
+}
+
+interface ActualDashboardPayload {
+  stats: Stat[];
+  highRiskCustomers: CustomerData[];
+  recentReturns: RecentReturn[];
+  riskDistribution: RiskDistributionItem[];
+}
+
+interface ApiResponseData {
   statusCode: number;
-  data: CustomerData[]; 
+  data: ActualDashboardPayload;
   message: string;
   success: boolean;
 }
 
-const Customers = () => {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [riskLevelFilter, setRiskLevelFilter] = useState<string>("All");
-  const [selectedCustomer, setSelectedCustomer] = useState<CustomerData | null>(null);
-  const { toast } = useToast();
+const iconMap: { [key: string]: React.ElementType } = {
+  Users: Users,
+  TrendingDown: TrendingDown,
+  AlertTriangle: AlertTriangle,
+  DollarSign: DollarSign,
+};
 
-  const { data: apiResponse, isLoading, isError, error } = useQuery<ApiResponseWrapper, Error>({
-    queryKey: ['customers', searchTerm, riskLevelFilter],
-    queryFn: () => getCustomers({ search: searchTerm, riskLevel: riskLevelFilter === 'All' ? undefined : riskLevelFilter }),
-    staleTime: 60 * 1000,
-    gcTime: 5 * 60 * 1000,
+const Dashboard = () => {
+  const navigate = useNavigate();
+
+  // Dialog state for high risk customer details
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerData | null>(null);
+  const [selectedReturn, setSelectedReturn] = useState<RecentReturn | null>(null);
+
+  const { data: apiResponse, isLoading, isError, error } = useQuery<ApiResponseData, Error>({
+    queryKey: ['dashboardData'],
+    queryFn: getDashboardData,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
     retry: 1,
   });
 
-  const customers = apiResponse?.data || [];
-
-  console.log("Customers component - isLoading:", isLoading);
-  console.log("Customers component - isError:", isError);
-  console.log("Customers component - error:", error);
-  console.log("Customers component - received apiResponse (raw data from query):", apiResponse);
-  console.log("Customers component - extracted customer array (apiResponse?.data):", apiResponse?.data);
-  console.log("Customers component - 'customers' variable (after nesting fix):", customers);
-  console.log("Customers component - customers.length (after nesting fix):", customers.length);
-
-
   const getRiskBadge = (score: number) => {
-    if (score >= 70) return { variant: "destructive" as const, label: "High Risk", color: "text-red-600" };
-    if (score >= 40) return { variant: "secondary" as const, label: "Medium Risk", color: "text-yellow-600" };
-    return { variant: "default" as const, label: "Low Risk", color: "text-green-600" };
+    if (score >= 70) return { variant: "destructive" as const, label: "High Risk" };
+    if (score >= 40) return { variant: "secondary" as const, label: "Medium Risk" };
+    return { variant: "default" as const, label: "Low Risk" };
   };
 
-  const handleExportCsv = () => {
-    if (customers.length === 0) {
-      toast({
-        title: "No data to export",
-        description: "There are no customers matching the current filters to export.",
-        variant: "default",
-      });
-      return;
-    }
-
-    const headers = [
-      "Customer ID", "Name", "Email", "Address", "Total Orders",
-      "Total Returns", "Return Rate (%)", "Risk Score", "Risk Level",
-      "Total Spent ($)", "Last Return Date", "Created At", "Updated At"
-    ];
-
-    const csvRows = customers.map(customer => {
-      return [
-        `"${customer.customerId}"`,
-        `"${customer.name}"`,
-        `"${customer.email}"`,
-        `"${customer.address || 'N/A'}"`,
-        customer.totalOrders,
-        customer.totalReturns,
-        customer.returnRate.toFixed(1),
-        customer.riskScore,
-        `"${customer.riskLevel}"`,
-        customer.totalSpent.toFixed(2),
-        customer.lastReturnDate ? new Date(customer.lastReturnDate).toLocaleDateString() : 'N/A',
-        new Date(customer.createdAt).toLocaleDateString(),
-        new Date(customer.updatedAt).toLocaleDateString(),
-      ].join(',');
-    });
-
-    const csvContent = [headers.join(','), ...csvRows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.setAttribute('download', 'customer_risk_data.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(link.href);
-
-    toast({
-      title: "Export Successful",
-      description: `${customers.length} customer records exported to CSV.`,
-    });
+  // Handle navigation for "View All High Risk Customers"
+  const handleViewAllHighRiskCustomers = () => {
+    navigate('/customers?riskLevel=High');
   };
 
-  const handleViewDetails = (customer: CustomerData) => {
-    setSelectedCustomer({
-      ...customer,
-      avgReturnTime: Math.random() * 10 + 1, // Simulate 1-11 days
-      commonReasons: Math.random() > 0.5 ? ["Defective", "Not as described"] : ["Wrong size/color", "Changed mind"],
-      flags: Math.random() > 0.7 ? ["Multiple defective claims", "Quick returns"] : [],
-    });
+  // Handle navigation for "View All Recent Returns"
+  const handleViewAllRecentReturns = () => {
+    navigate('/returns');
   };
 
   if (isLoading) {
     return (
       <div className="flex justify-center items-center min-h-[60vh] text-foreground">
-        <p>Loading customers...</p>
+        <p>Loading dashboard data...</p>
       </div>
     );
   }
@@ -172,7 +128,7 @@ const Customers = () => {
   if (isError) {
     return (
       <div className="flex flex-col justify-center items-center min-h-[60vh] text-red-500">
-        <p>Error loading customers: {error?.message || "An unknown error occurred"}</p>
+        <p>Error loading dashboard: {error?.message || "An unknown error occurred"}</p>
         <Button onClick={() => window.location.reload()} className="mt-4">
           Retry
         </Button>
@@ -180,249 +136,278 @@ const Customers = () => {
     );
   }
 
+  const {
+    stats = [],
+    highRiskCustomers = [],
+    recentReturns = [],
+    riskDistribution = []
+  } = apiResponse?.data || {};
+
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Header Actions */}
-      <div className="flex flex-col sm:flex-row gap-4 justify-between">
-        <div className="flex flex-1 gap-4">
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
-            <Input
-              placeholder="Search customers..."
-              className="pl-10"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-          <Select value={riskLevelFilter} onValueChange={setRiskLevelFilter}>
-            <SelectTrigger className="w-48">
-              <Filter className="h-4 w-4 mr-2" />
-              <SelectValue placeholder="Filter by risk" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="All">All Risk Levels</SelectItem>
-              <SelectItem value="High">High Risk (70+)</SelectItem>
-              <SelectItem value="Medium">Medium Risk (40-69)</SelectItem>
-              <SelectItem value="Low">Low Risk (0-39)</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <Button onClick={handleExportCsv} className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2">
-          <Download className="h-4 w-4 mr-2" />
-          Export CSV
-        </Button>
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {stats.map((stat) => {
+          const Icon = iconMap[stat.icon];
+          if (!Icon) return null;
+          return (
+            <Card key={stat.title} className="relative overflow-hidden">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  {stat.title}
+                </CardTitle>
+                <Icon className={`h-5 w-5 ${stat.color}`} />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-foreground">{stat.value}</div>
+                <div className="flex items-center mt-1">
+                  {stat.trend === "up" ? (
+                    <ArrowUpRight className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <ArrowDownRight className="h-4 w-4 text-red-600" />
+                  )}
+                  <span
+                    className={`text-xs font-medium ${
+                      stat.trend === "up" ? "text-green-600" : "text-red-600"
+                    }`}
+                  >
+                    {stat.change}
+                  </span>
+                  <span className="text-xs text-muted-foreground ml-1">vs last month</span>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
-      {/* Customers Table */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* High Risk Customers */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-lg font-semibold">High Risk Customers</CardTitle>
+              <CardDescription>Customers with risk score above 70</CardDescription>
+            </div>
+            <Button variant="outline" size="sm" onClick={handleViewAllHighRiskCustomers}>
+              <Filter className="h-4 w-4 mr-2" />
+              View All
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {highRiskCustomers.length > 0 ? (
+                highRiskCustomers.map((customer) => (
+                  <div
+                    key={customer.id}
+                    className="flex items-center justify-between p-3 bg-muted text-foreground rounded-lg border"
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="font-medium">{customer.name}</span>
+                        <Badge {...getRiskBadge(customer.riskScore)}>
+                          Score: {customer.riskScore}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        <span>Returns: {customer.returns}/{customer.totalOrders}</span>
+                        <span>Rate: {customer.totalOrders > 0 ? Math.round((customer.returns / customer.totalOrders) * 100) : 0}%</span>
+                      </div>
+                      <Progress value={customer.riskScore} className="mt-2 h-2" />
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedCustomer(customer)}
+                      aria-label="View customer details"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <p className="text-muted-foreground text-center py-4">No high risk customers found.</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Recent Returns */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-lg font-semibold">Recent Returns</CardTitle>
+              <CardDescription>Latest return requests and their risk assessment</CardDescription>
+            </div>
+            <Button variant="outline" size="sm" onClick={handleViewAllRecentReturns}>
+              <Eye className="h-4 w-4 mr-2" />
+              View All
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {recentReturns.length > 0 ? (
+                recentReturns.map((return_item) => (
+                  <div
+                    key={return_item.id}
+                    className="flex items-center justify-between p-3 bg-muted text-foreground rounded-lg border"
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-1">
+                        <span className="font-medium">{return_item.customer}</span>
+                        <Badge {...getRiskBadge(return_item.riskScore)}>
+                          {return_item.riskScore}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground mb-1">{return_item.product}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Reason: {return_item.reason} • {return_item.time}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setSelectedReturn(return_item)}
+                      aria-label="View return details"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <p className="text-muted-foreground text-center py-4">No recent returns found.</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Risk Distribution */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Customer Risk Analysis
-            <Badge variant="secondary">{customers.length} customers</Badge>
-          </CardTitle>
-          <CardDescription>
-            Monitor customer return patterns and risk scores
-          </CardDescription>
+          <CardTitle className="text-lg font-semibold">Risk Score Distribution</CardTitle>
+          <CardDescription>Customer distribution across risk categories</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Risk Score</TableHead>
-                  <TableHead>Return Rate</TableHead>
-                  <TableHead>Orders/Returns</TableHead>
-                  <TableHead>Total Spent</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {customers.length > 0 ? (
-                  customers.map((customer) => {
-                    const riskBadge = getRiskBadge(customer.riskScore);
-                    return (
-                      <TableRow key={customer.id}>
-                        <TableCell>
-                          <div>
-                            <div className="font-medium text-foreground">{customer.name}</div>
-                            <div className="text-sm text-muted-foreground">{customer.email}</div>
-                            <div className="text-xs text-muted-foreground">{customer.customerId}</div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Badge {...riskBadge}>{customer.riskScore}</Badge>
-                            {customer.riskLevel === "High" && <AlertTriangle className="h-4 w-4 text-red-500" />}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <span className={riskBadge.color}>{customer.returnRate.toFixed(1)}%</span>
-                            {customer.returnRate > 50 ? (
-                              <TrendingUp className="h-4 w-4 text-red-500" />
-                            ) : (
-                              <TrendingDown className="h-4 w-4 text-green-500" />
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm">
-                            {customer.totalOrders} orders / {customer.totalReturns} returns
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="font-medium">${customer.totalSpent.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                        </TableCell>
-                        <TableCell>
-                          {/* Dialog for View Details */}
-                          <Dialog onOpenChange={(open) => !open && setSelectedCustomer(null)}>
-                            <DialogTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleViewDetails(customer)}
-                              >
-                                <Eye className="h-4 w-4" />
-                              </Button>
-                            </DialogTrigger>
-                            {selectedCustomer && ( // Only render DialogContent if selectedCustomer is not null
-                              <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto"> {/* Adjusted max-w and added scrollability */}
-                                <DialogHeader>
-                                  <DialogTitle>Customer Profile: {selectedCustomer.name}</DialogTitle>
-                                  <DialogDescription>
-                                    Detailed insights into {selectedCustomer.name}'s return behavior.
-                                  </DialogDescription>
-                                </DialogHeader>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-4">
-                                  {/* Left Column: Risk Score & Core Details */}
-                                  <div className="space-y-4">
-                                    <Card className="text-center">
-                                      <CardContent className="pt-6">
-                                        <div className="text-5xl font-bold mb-2 text-foreground">{selectedCustomer.riskScore}</div>
-                                        <Badge {...getRiskBadge(selectedCustomer.riskScore)} className="text-base py-1 px-3">
-                                          {getRiskBadge(selectedCustomer.riskScore).label}
-                                        </Badge>
-                                        <Progress value={selectedCustomer.riskScore} className="mt-4 h-3 bg-muted" color={getRiskBadge(selectedCustomer.riskScore).color.replace('text-', 'bg-')} /> {/* Dynamic progress bar color */}
-                                        <p className="text-xs text-muted-foreground mt-2">Risk score based on return patterns.</p>
-                                      </CardContent>
-                                    </Card>
-
-                                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                                      <div className="col-span-2 flex justify-between items-center py-1 border-b border-border">
-                                        <Label className="text-muted-foreground">Customer ID:</Label>
-                                        <span className="font-medium text-foreground">{selectedCustomer.customerId}</span>
-                                      </div>
-                                      <div className="col-span-2 flex justify-between items-center py-1 border-b border-border">
-                                        <Label className="text-muted-foreground">Email:</Label>
-                                        <span className="text-foreground">{selectedCustomer.email}</span>
-                                      </div>
-                                      <div className="col-span-2 flex justify-between items-center py-1 border-b border-border">
-                                        <Label className="text-muted-foreground">Address:</Label>
-                                        <span className="text-foreground text-right">{selectedCustomer.address || 'N/A'}</span>
-                                      </div>
-                                      <div className="col-span-2 flex justify-between items-center py-1 border-b border-border">
-                                        <Label className="text-muted-foreground">Joined Date:</Label>
-                                        <span className="text-foreground">{new Date(selectedCustomer.createdAt).toLocaleDateString()}</span>
-                                      </div>
-                                      <div className="col-span-2 flex justify-between items-center py-1">
-                                        <Label className="text-muted-foreground">Last Updated:</Label>
-                                        <span className="text-foreground">{new Date(selectedCustomer.updatedAt).toLocaleDateString()}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {/* Right Column: Key Stats & Additional Info */}
-                                  <div className="space-y-4">
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                      <Card className="text-center">
-                                        <CardContent className="pt-4">
-                                          <div className="text-3xl font-bold text-foreground">{selectedCustomer.totalReturns}</div>
-                                          <div className="text-sm text-muted-foreground">Total Returns</div>
-                                        </CardContent>
-                                      </Card>
-                                      <Card className="text-center">
-                                        <CardContent className="pt-4">
-                                          <div className="text-3xl font-bold text-foreground">{selectedCustomer.returnRate.toFixed(1)}%</div>
-                                          <div className="text-sm text-muted-foreground">Return Rate</div>
-                                        </CardContent>
-                                      </Card>
-                                      <Card className="text-center col-span-full"> {/* Make this span full width */}
-                                        <CardContent className="pt-4">
-                                          <div className="text-3xl font-bold text-foreground">
-                                            {selectedCustomer.avgReturnTime ? selectedCustomer.avgReturnTime.toFixed(1) : 'N/A'}
-                                          </div>
-                                          <div className="text-sm text-muted-foreground">Avg Return Days</div>
-                                        </CardContent>
-                                      </Card>
-                                    </div>
-
-                                    {/* Risk Flags */}
-                                    <Card>
-                                      <CardHeader className="pb-2">
-                                        <CardTitle className="text-base">Risk Flags</CardTitle>
-                                      </CardHeader>
-                                      <CardContent>
-                                        {selectedCustomer.flags && selectedCustomer.flags.length > 0 ? (
-                                          <div className="flex flex-wrap gap-2">
-                                            {selectedCustomer.flags.map((flag: string, index: number) => (
-                                              <Badge key={index} variant="destructive" className="text-xs">
-                                                {flag}
-                                              </Badge>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <p className="text-sm text-muted-foreground">No specific risk flags identified.</p>
-                                        )}
-                                      </CardContent>
-                                    </Card>
-
-                                    {/* Common Return Reasons */}
-                                    <Card>
-                                      <CardHeader className="pb-2">
-                                        <CardTitle className="text-base">Common Return Reasons</CardTitle>
-                                      </CardHeader>
-                                      <CardContent>
-                                        {selectedCustomer.commonReasons && selectedCustomer.commonReasons.length > 0 ? (
-                                          <div className="flex flex-wrap gap-2">
-                                            {selectedCustomer.commonReasons.map((reason: string, index: number) => (
-                                              <Badge key={index} variant="outline" className="text-xs">
-                                                {reason}
-                                              </Badge>
-                                            ))}
-                                          </div>
-                                        ) : (
-                                          <p className="text-sm text-muted-foreground">No common return reasons recorded.</p>
-                                        )}
-                                      </CardContent>
-                                    </Card>
-                                  </div>
-                                </div>
-                                <DialogFooter>
-                                  <Button type="button" onClick={() => setSelectedCustomer(null)} variant="outline">Close</Button>
-                                </DialogFooter>
-                              </DialogContent>
-                            )}
-                          </Dialog>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                ) : (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                      No customers found matching your criteria.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {riskDistribution.map((item) => (
+              <div key={item.label} className="text-center p-6 bg-muted text-foreground rounded-lg border">
+                <div className="text-3xl font-bold mb-2">{item.count}</div>
+                <div className={`text-sm font-medium ${item.color} mb-1`}>{item.label}</div>
+                <div className={`text-xs ${item.color.replace('500', '400')}`}>{item.percentage}% of customers</div>
+              </div>
+            ))}
           </div>
         </CardContent>
       </Card>
+
+      {/* Dialog for High Risk Customer */}
+      <Dialog open={!!selectedCustomer} onOpenChange={() => setSelectedCustomer(null)}>
+        <DialogContent className="max-w-md rounded-2xl shadow-2xl border-0 bg-gradient-to-br from-white to-slate-100">
+          <DialogHeaderUI>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="flex-shrink-0">
+                <Users className="h-8 w-8 text-red-500 drop-shadow" />
+              </div>
+              <div>
+                <DialogTitleUI className="text-xl font-bold">Customer Details</DialogTitleUI>
+                <DialogDescriptionUI className="text-sm text-muted-foreground">
+                  Detailed information about the selected high risk customer.
+                </DialogDescriptionUI>
+              </div>
+            </div>
+          </DialogHeaderUI>
+          {selectedCustomer && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-lg">{selectedCustomer.name}</span>
+                <Badge {...getRiskBadge(selectedCustomer.riskScore)} className="text-base px-3 py-1">
+                  {getRiskBadge(selectedCustomer.riskScore).label}
+                </Badge>
+              </div>
+              <div className="flex flex-col gap-1 text-sm">
+                <div>
+                  <span className="font-semibold">Risk Score:</span>{" "}
+                  <span className="text-red-600 font-bold">{selectedCustomer.riskScore}</span>
+                </div>
+                <div>
+                  <span className="font-semibold">Returns:</span> {selectedCustomer.returns}
+                </div>
+                <div>
+                  <span className="font-semibold">Total Orders:</span> {selectedCustomer.totalOrders}
+                </div>
+                <div>
+                  <span className="font-semibold">Return Rate:</span>{" "}
+                  {selectedCustomer.totalOrders > 0
+                    ? Math.round((selectedCustomer.returns / selectedCustomer.totalOrders) * 100)
+                    : 0}
+                  %
+                </div>
+              </div>
+              <div className="py-2">
+                <Progress value={selectedCustomer.riskScore} className="h-3 rounded-full bg-slate-200" />
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => setSelectedCustomer(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog for Recent Return */}
+      <Dialog open={!!selectedReturn} onOpenChange={() => setSelectedReturn(null)}>
+        <DialogContent className="max-w-md rounded-2xl shadow-2xl border-0 bg-gradient-to-br from-white to-slate-100">
+          <DialogHeaderUI>
+            <div className="flex items-center gap-3 mb-2">
+              <AlertTriangle className="h-8 w-8 text-yellow-500 drop-shadow" />
+              <div>
+                <DialogTitleUI className="text-xl font-bold">Return Details</DialogTitleUI>
+                <DialogDescriptionUI className="text-sm text-muted-foreground">
+                  Detailed information about the selected return.
+                </DialogDescriptionUI>
+              </div>
+            </div>
+          </DialogHeaderUI>
+          {selectedReturn && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-lg">{selectedReturn.customer}</span>
+                <Badge {...getRiskBadge(selectedReturn.riskScore)} className="text-base px-3 py-1">
+                  {getRiskBadge(selectedReturn.riskScore).label}
+                </Badge>
+              </div>
+              <div className="flex flex-col gap-1 text-sm">
+                <div>
+                  <span className="font-semibold">Product:</span> {selectedReturn.product}
+                </div>
+                <div>
+                  <span className="font-semibold">Reason:</span> {selectedReturn.reason}
+                </div>
+                <div>
+                  <span className="font-semibold">Risk Score:</span>{" "}
+                  <span className="text-yellow-600 font-bold">{selectedReturn.riskScore}</span>
+                </div>
+                <div>
+                  <span className="font-semibold">Time:</span> {selectedReturn.time}
+                </div>
+              </div>
+              <div className="py-2">
+                <Progress value={selectedReturn.riskScore} className="h-3 rounded-full bg-slate-200" />
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => setSelectedReturn(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
 
-export default Customers;
+export default Dashboard;
