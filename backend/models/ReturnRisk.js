@@ -19,6 +19,19 @@ const ReturnRiskSchema = new mongoose.Schema({
         enum: ['Low', 'Medium', 'High', 'Critical'],
         required: true
     },
+    source: {
+        type: String,
+        enum: ['local', 'model', 'hybrid'],
+        default: 'local',
+    },
+    modelVersion: {
+        type: String,
+        default: 'unknown',
+    },
+    fallbackUsed: {
+        type: Boolean,
+        default: false,
+    },
     analysisDate: {
         type: Date,
         default: Date.now

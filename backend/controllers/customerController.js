@@ -4,18 +4,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import ReturnRisk from '../models/ReturnRisk.js'; 
-
-const calculateRiskScore = (totalOrders, totalReturns) => {
-  if (totalOrders === 0) return 0;
-  const returnRate = (totalReturns / totalOrders) * 100;
-  return Math.min(Math.round(returnRate), 100);
-};
-const getRiskLevelString = (score) => {
-  if (score >= 85) return 'Critical';
-  if (score >= 70) return 'High';
-  if (score >= 40) return 'Medium';
-  return 'Low';
-};
+import { calculateCustomerRisk } from '../utils/riskCalculator.js';
 
 /**
  * @function calculateAvgReturnTime
@@ -70,10 +59,12 @@ const getCustomers = asyncHandler(async (req, res) => {
   console.log('Fetched customers:', customers);
 
 
-  const processedCustomers = await Promise.all(customers.map(async customer => { 
-    const riskScore = calculateRiskScore(customer.totalOrders, customer.totalReturns);
+  const processedCustomers = await Promise.all(customers.map(async customer => {
     const calculatedReturnRate = customer.totalOrders > 0 ? ((customer.totalReturns / customer.totalOrders) * 100).toFixed(1) : '0.0';
-    const riskLevelString = getRiskLevelString(riskScore);
+    const localRisk = calculateCustomerRisk(customer);
+
+    const riskScore = customer.riskAnalysis?.riskScore ?? localRisk.riskScore;
+    const riskLevel = customer.riskAnalysis?.riskLevel ?? localRisk.riskLevel;
 
     return {
       id: customer._id, // Use Mongoose _id for unique key in frontend
@@ -85,8 +76,8 @@ const getCustomers = asyncHandler(async (req, res) => {
       totalReturns: customer.totalReturns,
       totalSpent: customer.totalSpent, 
       returnRate: parseFloat(calculatedReturnRate),
-      riskScore: riskScore,
-      riskLevel: riskLevelString,
+      riskScore,
+      riskLevel,
       lastReturnDate: customer.lastReturnDate,
       createdAt: customer.createdAt,
       updatedAt: customer.updatedAt,
@@ -124,11 +115,12 @@ const getCustomerById = asyncHandler(async (req, res) => {
     throw new ApiError(404, 'Customer not found');
   }
 
-  const riskScore = calculateRiskScore(customer.totalOrders, customer.totalReturns);
+  const localRisk = calculateCustomerRisk(customer);
   const calculatedReturnRate = customer.totalOrders > 0 ? ((customer.totalReturns / customer.totalOrders) * 100).toFixed(1) : '0.0';
-  const riskLevelString = getRiskLevelString(riskScore);
-
   const avgReturnTime = await calculateAvgReturnTime(customer.customerId); // Use customerId for Return model lookup
+
+  const riskScore = customer.riskAnalysis?.riskScore ?? localRisk.riskScore;
+  const riskLevel = customer.riskAnalysis?.riskLevel ?? localRisk.riskLevel;
 
   const customerData = {
     id: customer._id,
@@ -140,8 +132,8 @@ const getCustomerById = asyncHandler(async (req, res) => {
     totalReturns: customer.totalReturns,
     totalSpent: customer.totalSpent, // <--- REAL DATA
     returnRate: parseFloat(calculatedReturnRate),
-    riskScore: riskScore,
-    riskLevel: riskLevelString,
+    riskScore,
+    riskLevel,
     avgReturnTime: avgReturnTime, 
     lastReturnDate: customer.lastReturnDate,
     createdAt: customer.createdAt,

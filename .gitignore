@@ -2,17 +2,39 @@
 node_modules/
 .vite/
 
-
 # Build outputs
 dist/
 build/
 
 # Environment variables
 .env
+.env.*
+**/.env
+**/.env.*
 
 # IDE specific files (example for VS Code)
 .vscode/
 
 # Logs
 *.log
+
+# Delivery / archive artifacts
+*.zip
+risk-management-system-clean.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Data / local exports
+*.csv
+*.xlsx
+*.xls
+*.jsonl
+*.sqlite
+*.db
+
+# OS-specific files
+.DS_Store
+Thumbs.db
 

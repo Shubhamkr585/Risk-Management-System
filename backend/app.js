@@ -11,10 +11,12 @@ import { ApiError } from './utils/ApiError.js';
 import authRoutes from './routes/authRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
-import reportRoutes from './routes/reportRoutes.js'; // Add this import
+import reportRoutes from './routes/reportRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
 import riskRoutes from './routes/riskRoutes.js';
 import returnRoutes from './routes/returns.js';
+import monitorRoutes from './routes/monitorRoutes.js';
+import { recordRequest } from './utils/monitoring.js';
 
 dotenv.config();
 
@@ -22,7 +24,6 @@ const app = express();
 
 app.set('trust proxy', 1);
 
-// --- Core Middleware ---
 app.use(rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
@@ -31,16 +32,10 @@ app.use(rateLimit({
     legacyHeaders: false,
 }));
 
-
-
-// COR CONFIGURATION 
-// --- SECURE PROD READY CORS SETUP ---
-
- 
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   "https://risk-management-system-git-main-ankit-gargs-projects-9478362f.vercel.app",
-].filter(Boolean); // Ye null ya undefined values ko remove kar dega
+].filter(Boolean);
 
 const corsOptions = {
   origin: allowedOrigins,
@@ -56,40 +51,29 @@ app.use(express.urlencoded({ extended: true, limit: '16kb' }));
 app.use(cookieParser());
 app.use(morganMiddleware);
 
-// Add request logging middleware before routes
 app.use((req, res, next) => {
-  if (req.url.includes('/approve')) {
-    console.log(`🌐 INCOMING REQUEST: ${req.method} ${req.url}`);
-    console.log(`🌐 Headers:`, req.headers);
-    console.log(`🌐 Body:`, req.body);
-    console.log(`🌐 Cookies:`, req.cookies);
-  }
+  const startedAt = Date.now();
+
+  res.on('finish', () => {
+    recordRequest(req, res.statusCode, Date.now() - startedAt);
+  });
+
   next();
 });
 
-// --- Routes ---
-console.log("Mounting routes...");
+app.use('/api/monitor', monitorRoutes);
 app.use('/api/reports', reportRoutes);
-console.log("Reports routes mounted");
 app.use('/api/auth', authRoutes);
-console.log("Auth routes mounted");
 app.use('/api/dashboard', dashboardRoutes);
-console.log("Dashboard routes mounted");
 app.use('/api/analytics', analyticsRoutes);
-console.log("Analytics routes mounted");
 app.use('/api/customers', customerRoutes);
-console.log("Customer routes mounted");
 app.use('/api/risk', riskRoutes);
-console.log("Risk routes mounted");
 app.use('/api/returns', returnRoutes);
-console.log("Return routes mounted");
 
-// app.use('/api/risk', riskRoutes); // Risk analysis routes
 app.get('/', (req, res) => {
     res.send('API is running...');
 });
 
-  // Error handling middleware
-  app.use(errorMiddleware);
+app.use(errorMiddleware);
 
 export default app;

@@ -55,10 +55,10 @@ const adminRegisterSchema = Joi.object({
             'any.required': 'Password is required'
         }),
     role: Joi.string()
-        .valid('admin', 'superadmin')
-        .default('admin')
+        .valid('viewer', 'admin', 'superadmin')
+        .default('viewer')
         .messages({
-            'any.only': 'Role must be either "admin" or "superadmin"'
+            'any.only': 'Role must be one of "viewer", "admin", or "superadmin"'
         })
 });
 

@@ -59,3 +59,31 @@ export const sendRejectionMail = async (to, returnId, customerName = '') => {
     throw error;
   }
 };
+
+export const sendRiskWarningMail = async (to, customerName, riskScore, riskLevel) => {
+  const msg = {
+    to,
+    from: process.env.SENDGRID_FROM,
+    subject: `Warning: Your account risk is ${riskLevel}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #f59e0b;">Risk Warning Notification</h2>
+        ${customerName ? `<p>Dear ${customerName},</p>` : '<p>Dear Customer,</p>'}
+        <p>Our system has detected that your account has reached a <strong>${riskLevel}</strong> risk level with a score of <strong>${riskScore}</strong>.</p>
+        <p>Please review your recent returns and avoid patterns that may be interpreted as suspicious. Continued activity at this level may affect your account privileges or return approvals.</p>
+        <p>If you have any questions about this notification, please contact our support team.</p>
+        <hr>
+        <p style="color: #666; font-size: 12px;">Risk Return Management System</p>
+      </div>
+    `,
+  };
+
+  try {
+    const result = await sgMail.send(msg);
+    console.log(`✅ Risk warning email sent to ${to} for ${riskLevel} risk`);
+    return result;
+  } catch (error) {
+    console.error(`❌ Error sending risk warning email:`, error);
+    throw error;
+  }
+};

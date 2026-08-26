@@ -5,6 +5,7 @@ const metrics = {
   errorCount: 0,
   modelFallbacks: 0,
   latencySamples: [],
+  bullMqEnqueueLatencySamples: [],
   lastUpdated: null,
 };
 
@@ -27,6 +28,13 @@ const recordRequest = (req, statusCode, durationMs) => {
   }
 };
 
+const recordBullMqLatency = (durationMs) => {
+  metrics.bullMqEnqueueLatencySamples.push(durationMs);
+  if (metrics.bullMqEnqueueLatencySamples.length > 100) {
+    metrics.bullMqEnqueueLatencySamples.shift();
+  }
+};
+
 const recordModelFallback = () => {
   metrics.modelFallbacks += 1;
   metrics.lastUpdated = new Date().toISOString();
@@ -38,6 +46,11 @@ const getMonitoringSnapshot = () => {
     ? metrics.latencySamples.reduce((sum, value) => sum + value, 0) / totalSamples
     : 0;
 
+  const totalBullMqSamples = metrics.bullMqEnqueueLatencySamples.length;
+  const avgBullMqLatency = totalBullMqSamples > 0
+    ? metrics.bullMqEnqueueLatencySamples.reduce((sum, value) => sum + value, 0) / totalBullMqSamples
+    : 0;
+
   return {
     service: 'risk-management-backend',
     uptimeSeconds: Number(process.uptime().toFixed(2)),
@@ -47,8 +60,9 @@ const getMonitoringSnapshot = () => {
     modelFallbacks: metrics.modelFallbacks,
     requestsByRoute: { ...metrics.requestsByRoute },
     averageLatencyMs: Number(avgLatency.toFixed(2)),
+    averageBullMqLatencyMs: Number(avgBullMqLatency.toFixed(2)),
     lastUpdated: metrics.lastUpdated,
   };
 };
 
-export { recordRequest, recordModelFallback, getMonitoringSnapshot, metrics };
+export { recordRequest, recordBullMqLatency, recordModelFallback, getMonitoringSnapshot, metrics };

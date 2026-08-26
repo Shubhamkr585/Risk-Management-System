@@ -29,11 +29,15 @@ const AdminSchema = new mongoose.Schema({
     },
     role: {
         type: String,
-        enum: ['admin', 'superadmin'],
-        default: 'admin'
+        enum: ['viewer', 'admin', 'superadmin'],
+        default: 'viewer'
     },
     refreshToken: {
         type: String
+    },
+    tokenVersion: {
+        type: Number,
+        default: 1,
     },
     createdAt: {
         type: Date,
@@ -55,19 +59,23 @@ AdminSchema.methods.matchPassword = async function (enteredPassword) {
     return await bcrypt.compare(enteredPassword, this.password);
 };
 
+AdminSchema.methods.revokeSessions = function () {
+    this.refreshToken = undefined;
+    this.tokenVersion = (this.tokenVersion || 0) + 1;
+};
+
 AdminSchema.methods.generateAccessToken = function() {
     return jwt.sign(
-        { id: this._id, role: this.role },
-        process.env.ACCESS_TOKEN_SECRET, 
-        { expiresIn: parseInt(process.env.ACCESS_TOKEN_EXPIRY_MS)/1000 }
+        { id: this._id, role: this.role, tokenVersion: this.tokenVersion || 1 },
+        process.env.ACCESS_TOKEN_SECRET,
+        { expiresIn: parseInt(process.env.ACCESS_TOKEN_EXPIRY_MS || 900000, 10) / 1000 }
     );
 };
 AdminSchema.methods.generateRefreshToken = function() {
-   
     return jwt.sign(
-        { id: this._id },
+        { id: this._id, role: this.role, tokenVersion: this.tokenVersion || 1 },
         process.env.REFRESH_TOKEN_SECRET,
-        { expiresIn: parseInt(process.env.REFRESH_TOKEN_EXPIRY_MS)/1000 } 
+        { expiresIn: parseInt(process.env.REFRESH_TOKEN_EXPIRY_MS || 604800000, 10) / 1000 }
     );
 };
 

@@ -4,6 +4,7 @@ import { ApiError } from '../utils/ApiError.js';
 import Customer from '../models/Customer.js';
 import Return from '../models/Return.js';
 import ReturnRisk from '../models/ReturnRisk.js';
+import { calculateCustomerRisk } from '../utils/riskCalculator.js';
 
 /**
  * @function getAnalyticsData
@@ -40,7 +41,7 @@ const getAnalyticsData = asyncHandler(async (req, res) => {
 
     // Fetch data from database
     const [customers, returns, totalCustomers, totalReturns, riskAnalyses] = await Promise.all([
-      Customer.find({ createdAt: { $gte: startDate } }),
+      Customer.find({ createdAt: { $gte: startDate } }).populate('riskAnalysis'),
       Return.find({ createdAt: { $gte: startDate } }),
       Customer.countDocuments(),
       Return.countDocuments(),
@@ -78,10 +79,9 @@ const getAnalyticsData = asyncHandler(async (req, res) => {
       ? ((highRiskCustomers.length / riskAnalyses.length) * 100).toFixed(1)
       : "0.0";
 
-    // Calculate revenue impact from returns (assuming average order value)
-    const avgOrderValue = 100; // You might want to store this in your database
-    const revenueImpact = returns.length * avgOrderValue;
-    const prevRevenueImpact = prevReturns.length * avgOrderValue;
+    // Calculate revenue impact from actual return product prices stored in the database
+    const revenueImpact = returns.reduce((sum, item) => sum + Number(item.productPrice || 0), 0);
+    const prevRevenueImpact = prevReturns.reduce((sum, item) => sum + Number(item.productPrice || 0), 0);
     const revenueChange = prevRevenueImpact > 0 
       ? (((revenueImpact - prevRevenueImpact) / prevRevenueImpact) * 100).toFixed(1)
       : "0.0";
@@ -104,7 +104,10 @@ const getAnalyticsData = asyncHandler(async (req, res) => {
         ? Math.round(monthRiskData.reduce((sum, risk) => sum + risk.riskScore, 0) / monthRiskData.length)
         : 0;
 
-      const monthRevenue = monthReturns * avgOrderValue;
+      const monthReturnRecords = await Return.find({
+        createdAt: { $gte: monthStart, $lte: monthEnd }
+      });
+      const monthRevenue = monthReturnRecords.reduce((sum, item) => sum + Number(item.productPrice || 0), 0);
 
       monthlyData.push({
         month: monthStart.toLocaleDateString('en-US', { month: 'short' }),
@@ -156,52 +159,32 @@ const getAnalyticsData = asyncHandler(async (req, res) => {
       percentage: totalReasonsCount > 0 ? ((item.count / totalReasonsCount) * 100).toFixed(1) : "0.0"
     }));
 
-    // Category data (based on product names - simple categorization)
-    const categoryData = [
-      { category: "Electronics", returns: 0, riskScore: 0, color: "#3B82F6" },
-      { category: "Fashion", returns: 0, riskScore: 0, color: "#EF4444" },
-      { category: "Beauty", returns: 0, riskScore: 0, color: "#10B981" },
-      { category: "Home", returns: 0, riskScore: 0, color: "#F59E0B" },
-      { category: "Sports", returns: 0, riskScore: 0, color: "#8B5CF6" }
-    ];
-
-    // Simple product categorization based on keywords
-    const productCategories = {
-      electronics: ['phone', 'laptop', 'tablet', 'computer', 'electronic'],
-      fashion: ['shirt', 'pants', 'dress', 'shoes', 'clothes', 'fashion'],
-      beauty: ['cosmetic', 'makeup', 'skincare', 'beauty', 'perfume'],
-      home: ['furniture', 'kitchen', 'home', 'decoration', 'appliance'],
-      sports: ['sport', 'fitness', 'gym', 'exercise', 'athletic']
-    };
+    // Category data derived from real return records and associated customer risk scores
+    const categoryMap = new Map();
+    const riskByCustomer = new Map(
+      riskAnalyses.map(risk => [String(risk.customer?._id || risk.customer), Number(risk.riskScore || 0)])
+    );
 
     for (const returnItem of returns) {
-      const productLower = returnItem.product.toLowerCase();
-      let categorized = false;
-      
-      for (const [category, keywords] of Object.entries(productCategories)) {
-        if (keywords.some(keyword => productLower.includes(keyword))) {
-          const categoryIndex = categoryData.findIndex(c => 
-            c.category.toLowerCase() === category || 
-            (category === 'electronics' && c.category === 'Electronics')
-          );
-          if (categoryIndex !== -1) {
-            categoryData[categoryIndex].returns++;
-            categorized = true;
-            break;
-          }
-        }
+      const categoryName = returnItem.productCategory || 'General';
+      const key = categoryName;
+      if (!categoryMap.has(key)) {
+        categoryMap.set(key, { category: categoryName, returns: 0, riskTotal: 0, color: '#3B82F6' });
       }
-      
-      if (!categorized) {
-        // Default to first category if no match
-        categoryData[0].returns++;
-      }
+
+      const categoryEntry = categoryMap.get(key);
+      categoryEntry.returns += 1;
+      const customerKey = String(returnItem.customer || returnItem.customerId || '');
+      const customerRisk = riskByCustomer.get(customerKey) || 0;
+      categoryEntry.riskTotal += customerRisk;
     }
 
-    // Calculate average risk scores for categories (simplified)
-    categoryData.forEach(category => {
-      category.riskScore = Math.floor(Math.random() * 30) + 25; // Placeholder calculation
-    });
+    const categoryData = Array.from(categoryMap.values()).map((entry, index) => ({
+      category: entry.category,
+      returns: entry.returns,
+      riskScore: entry.returns > 0 ? Math.round(entry.riskTotal / entry.returns) : 0,
+      color: ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6'][index % 5],
+    }));
 
     const analyticsData = {
       metrics: [

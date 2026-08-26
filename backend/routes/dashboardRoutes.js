@@ -4,7 +4,7 @@ import { protect, authorize } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// Protect this route, only allowing 'admin' or 'superadmin' roles to access
-router.get('/', protect, authorize(['admin', 'superadmin']), getDashboardData);
+// viewer can read summaries, admin/superadmin can manage full operations
+router.get('/', protect, authorize(['viewer', 'admin', 'superadmin']), getDashboardData);
 
 export default router;

@@ -10,11 +10,15 @@ This is a Python/FastAPI microservice for training and serving the risk analysis
     ```
 
 2.  **Environment Variables**
-    Create a `.env` file in this directory (copy from `.env.example`) and add your MongoDB connection string:
+Create a `.env` file in this directory and add your MongoDB connection string:
     ```
     MONGODB_URI=mongodb://localhost:27017/risk-analyser
     PORT=8000
     ```
+
+    Optional: set `DB_NAME` if your MongoDB database has a different name than the one encoded in the URI.
+
+Note: the model now trains from customer behavior data and generates a risk score for customers rather than directly predicting return approval/rejection.
 
 ## Usage
 
@@ -29,6 +33,8 @@ This is a Python/FastAPI microservice for training and serving the risk analysis
     ```bash
     curl -X POST http://localhost:8000/train
     ```
+
+    > Note: if the training data contains only one label class (for example, all returns are approved and none are rejected), the model service will return a warning because `accuracy` is not a meaningful metric in that case.
 
 3.  **Seed Data (Optional)**
     If you have less than 500 records, generate synthetic data:
@@ -45,7 +51,8 @@ This is a Python/FastAPI microservice for training and serving the risk analysis
         "returnRate": 15.5,
         "totalReturns": 5,
         "totalOrders": 20,
-        "productPrice": 100.0
+        "totalSpent": 1200.0,
+        "lastReturnDate": "2026-07-25T00:00:00"
       }'
     ```
 

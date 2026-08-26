@@ -1,39 +1,44 @@
 from fastapi import FastAPI, HTTPException
+from typing import Optional
 from pydantic import BaseModel
 import joblib
 import os
-import pandas as pd
+from datetime import datetime
 from train import train_model
-from model_utils import prepare_features_for_prediction
+from model_utils import prepare_features_for_prediction, risk_level_from_score
 
 app = FastAPI(title="Risk Analysis Model Service")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, 'risk_model.joblib')
 
 # Global model variable
 model = None
 
 class PredictionRequest(BaseModel):
-    returnRate: float
-    totalReturns: int
-    totalOrders: int
-    productPrice: float
+    returnRate: Optional[float] = 0.0
+    totalReturns: Optional[int] = 0
+    totalOrders: Optional[int] = 0
+    totalSpent: Optional[float] = 0.0
+    lastReturnDate: Optional[datetime] = None
 
 class TrainingResponse(BaseModel):
     success: bool
     message: str
-    accuracy: float = None
+    warning: Optional[str] = None
+    metrics: Optional[dict] = None
 
 @app.on_event("startup")
 def load_model():
     global model
-    model_path = "risk_model.joblib"
-    if os.path.exists(model_path):
+    if os.path.exists(MODEL_PATH):
         try:
-            model = joblib.load(model_path)
-            print("Model loaded successfully.")
+            model = joblib.load(MODEL_PATH)
+            print(f"Model loaded successfully from {MODEL_PATH}.")
         except Exception as e:
             print(f"Failed to load model: {e}")
     else:
-        print("No trained model found. Please trigger training.")
+        print(f"No trained model found at {MODEL_PATH}. Please trigger training.")
 
 @app.get("/")
 def read_root():
@@ -45,13 +50,14 @@ def trigger_training():
     try:
         result = train_model()
         if result["success"]:
-            # Reload the model
-            model = joblib.load("risk_model.joblib")
-            return {
-                "success": True, 
-                "message": "Training completed successfully", 
-                "accuracy": result.get("accuracy")
+            model = joblib.load(MODEL_PATH)
+            response = {
+                "success": True,
+                "message": "Training completed successfully",
+                "warning": result.get("warning"),
+                "metrics": result.get("metrics"),
             }
+            return response
         else:
             return {
                 "success": False, 
@@ -67,18 +73,17 @@ def predict_risk(request: PredictionRequest):
         raise HTTPException(status_code=400, detail="Model not trained yet. Call /train first.")
     
     try:
-        # Convert request to DataFrame
         data = request.dict()
         input_df = prepare_features_for_prediction(data)
-        
-        # Predict
-        prediction = model.predict(input_df)[0] # 0 or 1
-        probability = model.predict_proba(input_df)[0][1] # Probability of being 1 (Rejected)
-        
+
+        prediction = model.predict(input_df)[0]
+        risk_score = float(max(0.0, min(prediction, 100.0)))
+        risk_level = risk_level_from_score(risk_score)
+
         return {
-            "risk_score": float(probability * 100), # 0-100 score
-            "recommendation": "Reject" if prediction == 1 else "Approve",
-            "is_rejected_prediction": int(prediction)
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+            "recommendation": "Monitor closely" if risk_level in ['High', 'Critical'] else "No immediate action",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")

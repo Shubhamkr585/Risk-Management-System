@@ -6,24 +6,21 @@ import { ApiResponse } from '../utils/ApiResponse.js';
 import { ApiError } from '../utils/ApiError.js';
 import ReturnRisk from '../models/ReturnRisk.js';
 import { sendApprovalMail, sendRejectionMail } from '../utils/mailer.js';
-
-// Helper function to calculate risk score (reused from customer controller)
-const calculateRiskScore = (totalOrders, totalReturns) => {
-  if (totalOrders === 0) return 0;
-  const returnRate = (totalReturns / totalOrders) * 100;
-  return Math.min(Math.round(returnRate), 100);
-};
+import { calculateCustomerRisk } from '../utils/riskCalculator.js';
+import { addRiskJob } from '../workers/riskQueue.js';
+import { performance } from 'perf_hooks';
+import { recordBullMqLatency } from '../utils/monitoring.js';
 
 const getReturnStats = asyncHandler(async (req, res) => {
   const totalReturnsCount = await Return.countDocuments();
   const pendingCount = await Return.countDocuments({ status: 'Pending' });
   const approvedCount = await Return.countDocuments({ status: 'Approved' });
   const rejectedCount = await Return.countDocuments({ status: 'Rejected' });
-  
+
   const customers = await Customer.find({});
   let highRiskReturnCount = 0;
   customers.forEach(customer => {
-    const riskScore = calculateRiskScore(customer.totalOrders, customer.totalReturns);
+    const { riskScore } = calculateCustomerRisk(customer);
     if (riskScore >= 70) {
       highRiskReturnCount += customer.totalReturns;
     }
@@ -40,6 +37,124 @@ const getReturnStats = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, stats, 'Return stats fetched successfully'));
 });
 
+const parsePagination = (req) => {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 10));
+
+  return {
+   page,
+   limit,
+   skip: (page - 1) * limit,
+  };
+};
+
+const getReturnIdempotencyKey = (req) => {
+  const headerKey = req.headers['idempotency-key'] || req.headers['x-idempotency-key'];
+  return headerKey || req.body?.idempotencyKey || req.body?.clientRequestId || null;
+};
+
+const buildReturnPayload = (returnItem) => ({
+  id: returnItem._id,
+  returnId: returnItem.returnId,
+  orderId: returnItem.orderId,
+  customerId: returnItem.customerId,
+  customer: returnItem.customerName,
+  product: returnItem.product,
+  reason: returnItem.reason,
+  status: returnItem.status,
+  returnDate: returnItem.returnDate,
+  riskScore: 0,
+  riskLevel: 'Low',
+  flags: returnItem.flags || [],
+  productPrice: returnItem.productPrice,
+  idempotencyKey: returnItem.idempotencyKey || null,
+});
+
+const createReturn = asyncHandler(async (req, res) => {
+  const payload = req.body || {};
+  const requiredFields = ['orderId', 'customerId', 'customerName', 'product', 'reason', 'productPrice'];
+  const missingFields = requiredFields.filter((field) => !payload[field] && payload[field] !== 0);
+
+  if (missingFields.length > 0) {
+   throw new ApiError(400, `Missing required fields: ${missingFields.join(', ')}`);
+  }
+
+  const idempotencyKey = getReturnIdempotencyKey(req);
+
+  if (idempotencyKey) {
+   const existingReturn = await Return.findOne({ idempotencyKey }).populate('customer', 'customerId name email totalOrders totalReturns');
+   if (existingReturn) {
+     const existingPayload = buildReturnPayload(existingReturn);
+     const customer = existingReturn.customer;
+     const { riskScore, riskLevel } = customer ? calculateCustomerRisk(customer) : { riskScore: 0, riskLevel: 'Low' };
+     existingPayload.riskScore = riskScore;
+     existingPayload.riskLevel = riskLevel;
+
+     return res.status(200).json(new ApiResponse(200, { return: existingPayload, duplicate: true }, 'Duplicate return request detected and ignored'));
+   }
+  }
+
+  const customer = await Customer.findOne({ customerId: payload.customerId });
+  if (!customer) {
+   throw new ApiError(404, 'Customer not found for this return request');
+  }
+
+  const existingCustomerName = payload.customerName || customer.name;
+  const generatedReturnId = `RET-${Date.now()}-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
+
+  let returnItem;
+  try {
+   returnItem = await Return.create({
+     returnId: generatedReturnId,
+     orderId: payload.orderId,
+     customer: customer._id,
+     customerId: customer.customerId,
+     customerName: existingCustomerName,
+     product: payload.product,
+     productSku: payload.productSku || '',
+     productCategory: payload.productCategory || 'General',
+     productPrice: Number(payload.productPrice),
+     reason: payload.reason,
+     status: 'Pending',
+     returnDate: payload.returnDate ? new Date(payload.returnDate) : new Date(),
+     images: Array.isArray(payload.images) ? payload.images : [],
+     adminNotes: payload.adminNotes || '',
+     flags: Array.isArray(payload.flags) ? payload.flags : [],
+     idempotencyKey: idempotencyKey || undefined,
+   });
+  } catch (error) {
+   if (idempotencyKey && error?.code === 11000) {
+     const existingReturn = await Return.findOne({ idempotencyKey }).populate('customer', 'customerId name email totalOrders totalReturns');
+     if (existingReturn) {
+       const existingPayload = buildReturnPayload(existingReturn);
+       const { riskScore, riskLevel } = existingReturn.customer ? calculateCustomerRisk(existingReturn.customer) : { riskScore: 0, riskLevel: 'Low' };
+       existingPayload.riskScore = riskScore;
+       existingPayload.riskLevel = riskLevel;
+
+       return res.status(200).json(new ApiResponse(200, { return: existingPayload, duplicate: true }, 'Duplicate return request detected and ignored'));
+     }
+   }
+
+   throw error;
+  }
+
+  // Trigger asynchronous risk evaluation via BullMQ
+  // Measure exactly how long it takes to establish the Redis connection and enqueue the job
+  const enqueueStartTime = performance.now();
+  await addRiskJob(customer._id.toString(), returnItem._id.toString());
+  const enqueueEndTime = performance.now();
+  
+  // Send the latency metric to our custom monitoring module to prove "sub-second latency"
+  recordBullMqLatency(enqueueEndTime - enqueueStartTime);
+
+  const createdData = buildReturnPayload(returnItem);
+  // Default values until background worker finishes
+  createdData.riskScore = 0;
+  createdData.riskLevel = 'Pending Calculation';
+
+  // Return a 202 Accepted status, which is best practice for asynchronous processing
+  res.status(202).json(new ApiResponse(202, { return: createdData, duplicate: false }, 'Return logged. Risk evaluation processing in background.'));
+});
 
 /**
  * @function getReturns
@@ -48,49 +163,67 @@ const getReturnStats = asyncHandler(async (req, res) => {
  * @access Private (Admin only)
  * @query search - Optional search term for customer, product, or reason
  * @query status - Optional filter by status ('Pending', 'Approved', 'Rejected')
+ * @query page - Optional page number for offset-based pagination
+ * @query limit - Optional page size, capped at 100
  */
 const getReturns = asyncHandler(async (req, res) => {
   const { search, status } = req.query;
+  const { page, limit, skip } = parsePagination(req);
   const query = {};
-  
+
   if (search) {
-    query.$or = [
-      { customerName: { $regex: search, $options: 'i' } },
-      { product: { $regex: search, $options: 'i' } },
-      { reason: { $regex: search, $options: 'i' } },
-    ];
+   query.$or = [
+     { customerName: { $regex: search, $options: 'i' } },
+     { product: { $regex: search, $options: 'i' } },
+     { reason: { $regex: search, $options: 'i' } },
+   ];
   }
 
   if (status && status !== 'All') {
-    query.status = status;
+   query.status = status;
   }
 
-  // Fetch returns from DB and populate customer details to get risk data
+  const totalItems = await Return.countDocuments(query);
+  const totalPages = Math.ceil(totalItems / limit);
+
   const returns = await Return.find(query)
-    .sort({ returnDate: -1 })
-    .populate('customer', 'totalOrders totalReturns'); // Populate only needed fields
+   .sort({ returnDate: -1 })
+   .skip(skip)
+   .limit(limit)
+   .populate('customer', 'totalOrders totalReturns');
 
   const processedReturns = returns.map(returnItem => {
-    // Get the populated customer object
-    const customer = returnItem.customer;
-    const riskScore = customer ? calculateRiskScore(customer.totalOrders, customer.totalReturns) : 0;
-    
-    return {
-      id: returnItem._id,
-      returnId: returnItem.returnId,
-      orderId: returnItem.orderId,
-      customerId: returnItem.customerId,
-      customer: returnItem.customerName,
-      product: returnItem.product,
-      reason: returnItem.reason,
-      status: returnItem.status,
-      riskScore: riskScore,
-      flags: returnItem.flags || [],
-      productPrice: returnItem.productPrice,
-    };
+   const customer = returnItem.customer;
+   const { riskScore, riskLevel } = customer ? calculateCustomerRisk(customer) : { riskScore: 0, riskLevel: 'Low' };
+
+   return {
+     id: returnItem._id,
+     returnId: returnItem.returnId,
+     orderId: returnItem.orderId,
+     customerId: returnItem.customerId,
+     customer: returnItem.customerName,
+     product: returnItem.product,
+     reason: returnItem.reason,
+     status: returnItem.status,
+     riskScore,
+     riskLevel,
+     flags: returnItem.flags || [],
+     productPrice: returnItem.productPrice,
+     returnDate: returnItem.returnDate,
+   };
   });
 
-  res.status(200).json(new ApiResponse(200, processedReturns, 'Returns fetched successfully'));
+  res.status(200).json(new ApiResponse(200, {
+   items: processedReturns,
+   pagination: {
+     page,
+     limit,
+     totalItems,
+     totalPages,
+     hasNextPage: page < totalPages,
+     hasPrevPage: page > 1,
+   },
+  }, 'Returns fetched successfully'));
 });
 
 
@@ -104,7 +237,7 @@ const getReturnById = asyncHandler(async (req, res) => {
   }
 
   const customer = returnItem.customer;
-  const riskScore = customer ? calculateRiskScore(customer.totalOrders, customer.totalReturns) : 0;
+  const { riskScore, riskLevel } = customer ? calculateCustomerRisk(customer) : { riskScore: 0, riskLevel: 'Low' };
   
   const returnDetails = {
     id: returnItem._id,
@@ -124,6 +257,7 @@ const getReturnById = asyncHandler(async (req, res) => {
     reason: returnItem.reason,
     status: returnItem.status,
     riskScore: riskScore,
+    riskLevel: riskLevel,
     requestDate: returnItem.returnDate.toLocaleDateString('en-US'),
     responseTime: returnItem.responseTime || 'N/A',
     images: returnItem.images || [],
@@ -352,4 +486,4 @@ const rejectReturn = asyncHandler(async (req, res) => {
   }
 });
 
-export { getReturnStats, getReturns, getReturnById, approveReturn, rejectReturn };
+export { getReturnStats, getReturns, getReturnById, createReturn, approveReturn, rejectReturn };

@@ -71,6 +71,12 @@ const ReturnSchema = new mongoose.Schema(
     adminNotes: { // NEW: Admin Notes
       type: String,
     },
+    idempotencyKey: {
+      type: String,
+      trim: true,
+      sparse: true,
+      index: true,
+    },
     flags: { // NEW: Risk flags (from your data dump)
       type: [String],
       default: [],
@@ -84,6 +90,7 @@ const ReturnSchema = new mongoose.Schema(
 // Remove duplicate indexes - keep only one method
 ReturnSchema.index({ customer: 1 });
 ReturnSchema.index({ returnId: 1 });
+ReturnSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
 
 const Return = mongoose.model('Return', ReturnSchema);
 

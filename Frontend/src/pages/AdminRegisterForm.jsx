@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { registerAdmin } from '@/lib/api'; // Adjust path as needed
+import { registerAdmin } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,32 +15,24 @@ const AdminRegisterPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log("handleSubmit triggered!"); // <--- Confirm this appears in browser console
     setIsLoading(true);
     try {
-      // Log the data being sent to verify its contents
-      console.log("Data being sent from frontend:", { username, email, password, role: 'admin' });
-
-      // Call the registerAdmin API function with the form data
       const res = await registerAdmin({ username, email, password, role: 'admin' });
 
-      // Show success toast and clear form fields
       toast({
         title: 'Admin Registered!',
-        description: `Admin "${res.username}" created successfully.`,
+        description: `Admin "${res.data.username}" created successfully.`,
       });
       setUsername('');
       setEmail('');
       setPassword('');
     } catch (error) {
-      // Show error toast if registration fails
       toast({
         title: 'Registration Failed',
         description: error.message,
         variant: 'destructive',
       });
     } finally {
-      // Reset loading state
       setIsLoading(false);
     }
   };

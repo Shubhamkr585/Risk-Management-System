@@ -2,19 +2,7 @@ import Customer from '../models/Customer.js';
 import Return from '../models/Return.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
-
-const calculateRiskScore = (totalOrders, totalReturns) => {
-  if (totalOrders === 0) return 0; 
-  const returnRate = (totalReturns / totalOrders) * 100;
-  return Math.min(Math.round(returnRate), 100);
-};
-
-const getRiskCategory = (score) => {
-  if (score >= 70) return 'high';
-  if (score >= 40) return 'medium';
-  return 'low';
-};
-
+import { calculateCustomerRisk, getRiskLevel } from '../utils/riskCalculator.js';
 
 const formatTimeAgo = (date) => {
   if (!date) return 'N/A';
@@ -33,19 +21,18 @@ const formatTimeAgo = (date) => {
   return Math.floor(seconds) + " seconds ago";
 };
 
-
-
 const getDashboardData = asyncHandler(async (req, res) => {
-
-  const customers = await Customer.find({});
-  // Fetch recent returns and populate customer details
-  // Only fetch returns from the last 30 days for "recent"
+  const customers = await Customer.find({}).populate('riskAnalysis');
+  // Fetch recent returns and populate customer details along with riskAnalysis
   const recentReturnsFromDB = await Return.find({
     returnDate: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
   })
-    .sort({ returnDate: -1 }) 
-    .limit(10) 
-    .populate('customer', 'customerId name totalOrders totalReturns'); 
+    .sort({ returnDate: -1 })
+    .limit(10)
+    .populate({
+      path: 'customer',
+      populate: { path: 'riskAnalysis' },
+    });
 
   // Initialize dashboard stats
   let totalCustomers = customers.length;
@@ -58,28 +45,22 @@ const getDashboardData = asyncHandler(async (req, res) => {
   const highRiskCustomersList = [];
   const recentReturnsListFormatted = []; // To store formatted recent return info
 
-  // Simulate revenue impact (placeholder, as you don't have product prices)
-  let revenueImpact = Math.floor(Math.random() * 100000) + 20000; // Random value for demonstration
+  // Revenue impact is calculated from actual return product prices in the database
+  const returnRecords = await Return.find({}).lean();
+  const revenueImpact = returnRecords.reduce((sum, returnItem) => sum + Number(returnItem.productPrice || 0), 0);
 
-  // Process customers to calculate stats and identify high-risk
+  // Process customers using canonical risk scoring
   customers.forEach(customer => {
     totalOrdersAcrossAllCustomers += customer.totalOrders;
     totalReturnsAcrossAllCustomers += customer.totalReturns;
 
-    const riskScore = calculateRiskScore(customer.totalOrders, customer.totalReturns);
-    const riskCategory = getRiskCategory(riskScore);
+    const localRisk = calculateCustomerRisk(customer);
+    const riskScore = customer.riskAnalysis?.riskScore ?? localRisk.riskScore;
+    const riskLevel = customer.riskAnalysis?.riskLevel ?? localRisk.riskLevel;
 
-    // Count risk categories
-    if (riskCategory === 'high') {
+    // Count risk categories matching standard thresholds (High >= 70, Medium >= 40, Low < 40)
+    if (riskLevel === 'High' || riskLevel === 'Critical' || riskScore >= 70) {
       highRiskCustomerCount++;
-    } else if (riskCategory === 'medium') {
-      mediumRiskCustomerCount++;
-    } else {
-      lowRiskCustomerCount++;
-    }
-
-    // Add to high risk list if applicable
-    if (riskCategory === 'high') {
       highRiskCustomersList.push({
         id: customer.customerId,
         name: customer.name,
@@ -87,21 +68,25 @@ const getDashboardData = asyncHandler(async (req, res) => {
         returns: customer.totalReturns,
         totalOrders: customer.totalOrders,
       });
+    } else if (riskLevel === 'Medium' || (riskScore >= 40 && riskScore < 70)) {
+      mediumRiskCustomerCount++;
+    } else {
+      lowRiskCustomerCount++;
     }
   });
 
-  // Format recent returns from DB
+  // Format recent returns from DB using canonical risk score
   recentReturnsFromDB.forEach(returnItem => {
-    // Ensure customer is populated and not null
     const customerData = returnItem.customer;
     if (customerData) {
+      const localRisk = calculateCustomerRisk(customerData);
+      const riskScore = customerData.riskAnalysis?.riskScore ?? localRisk.riskScore;
       recentReturnsListFormatted.push({
         id: returnItem.returnId,
         customer: customerData.name,
         product: returnItem.product,
         reason: returnItem.reason,
-        // Calculate risk score for the customer associated with this return
-        riskScore: calculateRiskScore(customerData.totalOrders, customerData.totalReturns),
+        riskScore,
         time: formatTimeAgo(returnItem.returnDate)
       });
     }
@@ -114,40 +99,61 @@ const getDashboardData = asyncHandler(async (req, res) => {
     ? ((totalReturnsAcrossAllCustomers / totalOrdersAcrossAllCustomers) * 100).toFixed(1)
     : '0.0';
 
-  // Simulate change (for now, hardcode or generate random small changes)
-  const generateRandomChange = () => (Math.random() * 5 - 2.5).toFixed(1); // -2.5% to +2.5%
-  const generateRandomTrend = () => (Math.random() > 0.5 ? 'up' : 'down');
+  const previousMonthStart = new Date();
+  previousMonthStart.setMonth(previousMonthStart.getMonth() - 1);
+  previousMonthStart.setDate(1);
+  const previousMonthEnd = new Date();
+  previousMonthEnd.setDate(1);
+
+  const previousMonthReturns = await Return.countDocuments({
+    createdAt: { $gte: previousMonthStart, $lt: previousMonthEnd }
+  });
+  const previousMonthRevenue = await Return.aggregate([
+    { $match: { createdAt: { $gte: previousMonthStart, $lt: previousMonthEnd } } },
+    { $group: { _id: null, total: { $sum: '$productPrice' } } }
+  ]);
+
+  const prevReturnRate = previousMonthReturns > 0
+    ? ((previousMonthReturns / Math.max(totalCustomers, 1)) * 100)
+    : 0;
+  const returnRateChange = prevReturnRate > 0
+    ? (((Number(overallReturnRate) - prevReturnRate) / prevReturnRate) * 100).toFixed(1)
+    : '0.0';
+  const prevRevenue = previousMonthRevenue[0]?.total || 0;
+  const revenueChange = prevRevenue > 0
+    ? (((revenueImpact - prevRevenue) / prevRevenue) * 100).toFixed(1)
+    : '0.0';
 
   const stats = [
     {
       title: "Total Customers",
       value: totalCustomers.toLocaleString(),
-      change: `${generateRandomTrend() === 'up' ? '+' : ''}${generateRandomChange()}%`,
-      trend: generateRandomTrend(),
+      change: '0.0%',
+      trend: 'neutral',
       icon: 'Users', 
       color: "text-blue-600",
     },
     {
       title: "Return Rate",
       value: `${overallReturnRate}%`,
-      change: `${generateRandomTrend() === 'up' ? '+' : ''}${generateRandomChange()}%`,
-      trend: generateRandomTrend(),
+      change: `${Number(returnRateChange) >= 0 ? '+' : ''}${returnRateChange}%`,
+      trend: Number(returnRateChange) >= 0 ? 'up' : 'down',
       icon: 'TrendingDown',
       color: "text-green-600",
     },
     {
       title: "High Risk Customers",
       value: highRiskCustomerCount.toLocaleString(),
-      change: `${generateRandomTrend() === 'up' ? '+' : ''}${generateRandomChange()}%`,
-      trend: generateRandomTrend(),
+      change: '0.0%',
+      trend: 'neutral',
       icon: 'AlertTriangle',
       color: "text-red-600",
     },
     {
       title: "Revenue Impact",
       value: `$${revenueImpact.toLocaleString()}`, 
-      change: `${generateRandomTrend() === 'up' ? '+' : ''}${generateRandomChange()}%`,
-      trend: generateRandomTrend(),
+      change: `${Number(revenueChange) >= 0 ? '+' : ''}${revenueChange}%`,
+      trend: Number(revenueChange) >= 0 ? 'up' : 'down',
       icon: 'DollarSign',
       color: "text-purple-600",
     },
