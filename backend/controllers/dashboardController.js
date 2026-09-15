@@ -2,127 +2,161 @@ import Customer from '../models/Customer.js';
 import Return from '../models/Return.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
-import { calculateCustomerRisk, getRiskLevel } from '../utils/riskCalculator.js';
+import { formatDistanceToNow, subMonths, subDays, startOfMonth } from 'date-fns';
 
-const formatTimeAgo = (date) => {
-  if (!date) return 'N/A';
-  const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000);
-
-  let interval = seconds / 31536000;
-  if (interval > 1) return Math.floor(interval) + " years ago";
-  interval = seconds / 2592000;
-  if (interval > 1) return Math.floor(interval) + " months ago";
-  interval = seconds / 86400;
-  if (interval > 1) return Math.floor(interval) + " days ago";
-  interval = seconds / 3600;
-  if (interval > 1) return Math.floor(interval) + " hours ago";
-  interval = seconds / 60;
-  if (interval > 1) return Math.floor(interval) + " minutes ago";
-  return Math.floor(seconds) + " seconds ago";
-};
+// Notice: The manual formatTimeAgo function is completely removed!
+// We now use date-fns `formatDistanceToNow(date, { addSuffix: true })` directly.
 
 const getDashboardData = asyncHandler(async (req, res) => {
-  const customers = await Customer.find({}).populate('riskAnalysis');
-  // Fetch recent returns and populate customer details along with riskAnalysis
-  const recentReturnsFromDB = await Return.find({
-    returnDate: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
-  })
-    .sort({ returnDate: -1 })
-    .limit(10)
-    .populate({
-      path: 'customer',
-      populate: { path: 'riskAnalysis' },
-    });
+  
+  // Use date-fns for clean, readable date boundaries
+  const now = new Date();
+  const previousMonthStart = startOfMonth(subMonths(now, 1));
+  const previousMonthEnd = startOfMonth(now);
+  const thirtyDaysAgo = subDays(now, 30);
 
-  // Initialize dashboard stats
-  let totalCustomers = customers.length;
-  let totalOrdersAcrossAllCustomers = 0;
-  let totalReturnsAcrossAllCustomers = 0;
-  let highRiskCustomerCount = 0;
-  let lowRiskCustomerCount = 0;
-  let mediumRiskCustomerCount = 0;
+  // ---------------------------------------------------------------------------
+  // CRITICAL IMPROVEMENT 1: Execute all DB calls concurrently with Promise.all
+  // and completely replace `.find({})` memory dumps with Aggregations.
+  // ---------------------------------------------------------------------------
+  const [
+    customerMetrics, 
+    revenueMetrics, 
+    previousMonthMetrics,
+    recentReturnsFromDB
+  ] = await Promise.all([
+    
+    // 1. Customer Aggregation (Totals + Risk Distribution + Top 5 High Risk)
+    Customer.aggregate([
+      {
+        $facet: {
+          totals: [
+            { 
+              $group: { 
+                _id: null, 
+                totalCustomers: { $sum: 1 },
+                totalOrders: { $sum: "$totalOrders" },
+                totalReturns: { $sum: "$totalReturns" }
+              } 
+            }
+          ],
+          riskDistribution: [
+            {
+              $bucket: {
+                groupBy: "$riskScore", 
+                boundaries: [0, 40, 70, 100],
+                default: "High Risk",
+                output: { count: { $sum: 1 } }
+              }
+            }
+          ],
+          topHighRisk: [
+            { $match: { riskScore: { $gte: 70 } } },
+            { $sort: { riskScore: -1 } },
+            { $limit: 5 },
+            { 
+              $project: {
+                id: "$customerId",
+                name: 1,
+                riskScore: 1,
+                returns: "$totalReturns",
+                totalOrders: 1
+              }
+            }
+          ]
+        }
+      }
+    ]),
 
-  const highRiskCustomersList = [];
-  const recentReturnsListFormatted = []; // To store formatted recent return info
+    // 2. Total Revenue Impact
+    Return.aggregate([
+      { $group: { _id: null, revenueImpact: { $sum: { $toDouble: "$productPrice" } } } }
+    ]),
 
-  // Revenue impact is calculated from actual return product prices in the database
-  const returnRecords = await Return.find({}).lean();
-  const revenueImpact = returnRecords.reduce((sum, returnItem) => sum + Number(returnItem.productPrice || 0), 0);
+    // 3. Previous Month Metrics (Returns Count & Revenue combined)
+    Return.aggregate([
+      { $match: { createdAt: { $gte: previousMonthStart, $lt: previousMonthEnd } } },
+      { $group: { _id: null, returns: { $sum: 1 }, revenue: { $sum: { $toDouble: "$productPrice" } } } }
+    ]),
 
-  // Process customers using canonical risk scoring
-  customers.forEach(customer => {
-    totalOrdersAcrossAllCustomers += customer.totalOrders;
-    totalReturnsAcrossAllCustomers += customer.totalReturns;
-
-    const localRisk = calculateCustomerRisk(customer);
-    const riskScore = customer.riskAnalysis?.riskScore ?? localRisk.riskScore;
-    const riskLevel = customer.riskAnalysis?.riskLevel ?? localRisk.riskLevel;
-
-    // Count risk categories matching standard thresholds (High >= 70, Medium >= 40, Low < 40)
-    if (riskLevel === 'High' || riskLevel === 'Critical' || riskScore >= 70) {
-      highRiskCustomerCount++;
-      highRiskCustomersList.push({
-        id: customer.customerId,
-        name: customer.name,
-        riskScore: riskScore,
-        returns: customer.totalReturns,
-        totalOrders: customer.totalOrders,
-      });
-    } else if (riskLevel === 'Medium' || (riskScore >= 40 && riskScore < 70)) {
-      mediumRiskCustomerCount++;
-    } else {
-      lowRiskCustomerCount++;
-    }
-  });
-
-  // Format recent returns from DB using canonical risk score
-  recentReturnsFromDB.forEach(returnItem => {
-    const customerData = returnItem.customer;
-    if (customerData) {
-      const localRisk = calculateCustomerRisk(customerData);
-      const riskScore = customerData.riskAnalysis?.riskScore ?? localRisk.riskScore;
-      recentReturnsListFormatted.push({
-        id: returnItem.returnId,
-        customer: customerData.name,
-        product: returnItem.product,
-        reason: returnItem.reason,
-        riskScore,
-        time: formatTimeAgo(returnItem.returnDate)
-      });
-    }
-  });
-
-  highRiskCustomersList.sort((a, b) => b.riskScore - a.riskScore);
-
-
-  const overallReturnRate = totalOrdersAcrossAllCustomers > 0
-    ? ((totalReturnsAcrossAllCustomers / totalOrdersAcrossAllCustomers) * 100).toFixed(1)
-    : '0.0';
-
-  const previousMonthStart = new Date();
-  previousMonthStart.setMonth(previousMonthStart.getMonth() - 1);
-  previousMonthStart.setDate(1);
-  const previousMonthEnd = new Date();
-  previousMonthEnd.setDate(1);
-
-  const previousMonthReturns = await Return.countDocuments({
-    createdAt: { $gte: previousMonthStart, $lt: previousMonthEnd }
-  });
-  const previousMonthRevenue = await Return.aggregate([
-    { $match: { createdAt: { $gte: previousMonthStart, $lt: previousMonthEnd } } },
-    { $group: { _id: null, total: { $sum: '$productPrice' } } }
+    // 4. Recent Returns (Only pull the 10 we need) using date-fns thirtyDaysAgo
+    Return.find({ returnDate: { $gte: thirtyDaysAgo } })
+      .sort({ returnDate: -1 })
+      .limit(10)
+      .populate('customer') 
+      .lean()
   ]);
+
+  // ---------------------------------------------------------------------------
+  // CRITICAL IMPROVEMENT 2: Extract values safely from Aggregation results
+  // ---------------------------------------------------------------------------
+  const totals = customerMetrics[0]?.totals[0] || { totalCustomers: 0, totalOrders: 0, totalReturns: 0 };
+  const totalCustomers = totals.totalCustomers;
+  
+  const revenueImpact = revenueMetrics[0]?.revenueImpact || 0;
+  
+  const previousMonthReturns = previousMonthMetrics[0]?.returns || 0;
+  const prevRevenue = previousMonthMetrics[0]?.revenue || 0;
+
+  // Extract Risk Distribution
+  const dist = customerMetrics[0]?.riskDistribution || [];
+  const lowRiskCount = dist.find(d => d._id === 0)?.count || 0;
+  const mediumRiskCount = dist.find(d => d._id === 40)?.count || 0;
+  const highRiskCount = dist.find(d => typeof d._id === 'string' ? true : d._id === 70)?.count || 0;
+  
+  const highRiskCustomersList = customerMetrics[0]?.topHighRisk || [];
+
+  // Format recent returns (using date-fns for "time ago")
+  const recentReturnsListFormatted = recentReturnsFromDB.map(returnItem => ({
+    id: returnItem.returnId || returnItem._id,
+    customer: returnItem.customer?.name || 'Unknown',
+    product: returnItem.product,
+    reason: returnItem.reason,
+    riskScore: returnItem.customer?.riskScore || 0,
+    time: returnItem.returnDate ? formatDistanceToNow(new Date(returnItem.returnDate), { addSuffix: true }) : 'N/A'
+  })).slice(0, 4);
+
+  // ---------------------------------------------------------------------------
+  // CRITICAL IMPROVEMENT 3: Calculate percentages safely
+  // ---------------------------------------------------------------------------
+  const overallReturnRate = totals.totalOrders > 0
+    ? ((totals.totalReturns / totals.totalOrders) * 100).toFixed(1)
+    : '0.0';
 
   const prevReturnRate = previousMonthReturns > 0
     ? ((previousMonthReturns / Math.max(totalCustomers, 1)) * 100)
     : 0;
+    
   const returnRateChange = prevReturnRate > 0
     ? (((Number(overallReturnRate) - prevReturnRate) / prevReturnRate) * 100).toFixed(1)
     : '0.0';
-  const prevRevenue = previousMonthRevenue[0]?.total || 0;
+    
   const revenueChange = prevRevenue > 0
     ? (((revenueImpact - prevRevenue) / prevRevenue) * 100).toFixed(1)
     : '0.0';
+
+  const totalCustomersForPercentage = totalCustomers > 0 ? totalCustomers : 1;
+
+  const riskDistribution = [
+    {
+      label: "Low Risk (0-39)",
+      count: lowRiskCount.toLocaleString(),
+      percentage: ((lowRiskCount / totalCustomersForPercentage) * 100).toFixed(1),
+      color: "text-green-500",
+    },
+    {
+      label: "Medium Risk (40-69)",
+      count: mediumRiskCount.toLocaleString(),
+      percentage: ((mediumRiskCount / totalCustomersForPercentage) * 100).toFixed(1),
+      color: "text-yellow-500",
+    },
+    {
+      label: "High Risk (70-100)",
+      count: highRiskCount.toLocaleString(),
+      percentage: ((highRiskCount / totalCustomersForPercentage) * 100).toFixed(1),
+      color: "text-red-500",
+    },
+  ];
 
   const stats = [
     {
@@ -143,7 +177,7 @@ const getDashboardData = asyncHandler(async (req, res) => {
     },
     {
       title: "High Risk Customers",
-      value: highRiskCustomerCount.toLocaleString(),
+      value: highRiskCount.toLocaleString(),
       change: '0.0%',
       trend: 'neutral',
       icon: 'AlertTriangle',
@@ -159,41 +193,13 @@ const getDashboardData = asyncHandler(async (req, res) => {
     },
   ];
 
-  const totalCustomersForPercentage = totalCustomers > 0 ? totalCustomers : 1; // Avoid division by zero
-  const lowRiskPercentage = ((lowRiskCustomerCount / totalCustomersForPercentage) * 100).toFixed(1);
-  const mediumRiskPercentage = ((mediumRiskCustomerCount / totalCustomersForPercentage) * 100).toFixed(1);
-  const highRiskPercentage = ((highRiskCustomerCount / totalCustomersForPercentage) * 100).toFixed(1);
-
-  const riskDistribution = [
-    {
-      label: "Low Risk (0-39)",
-      count: lowRiskCustomerCount.toLocaleString(),
-      percentage: lowRiskPercentage,
-      color: "text-green-500",
-    },
-    {
-      label: "Medium Risk (40-69)",
-      count: mediumRiskCustomerCount.toLocaleString(),
-      percentage: mediumRiskPercentage,
-      color: "text-yellow-500",
-    },
-    {
-      label: "High Risk (70-100)",
-      count: highRiskCustomerCount.toLocaleString(),
-      percentage: highRiskPercentage,
-      color: "text-red-500",
-    },
-  ];
-
-
-
   res.status(200).json(
     new ApiResponse(
       200,
       {
         stats,
-        highRiskCustomers: highRiskCustomersList.slice(0, 5), 
-        recentReturns: recentReturnsListFormatted.slice(0, 4), 
+        highRiskCustomers: highRiskCustomersList,
+        recentReturns: recentReturnsListFormatted,
         riskDistribution,
       },
       'Dashboard data fetched successfully'

@@ -21,7 +21,7 @@ const shouldSendRiskAlert = async (customer, riskScore, riskLevel) => {
         riskLevel,
         createdAt: { $gte: oneDayAgo },
         status: { $in: ['sent', 'pending'] },
-    }).sort({ triggeredAt: -1 });
+    }).sort({ triggeredAt: -1 }).lean(); // Added lean() for read-only speed
 
     if (existingAlert) {
         return { shouldSend: false, reason: 'Recent warning already sent', alert: existingAlert };
@@ -79,17 +79,9 @@ const triggerRiskWarning = async (customer, riskScore, riskLevel) => {
 
 /**
  * @function calculateCustomerRisk
- * @description Calculates and stores the return risk for a specific customer.
- * This uses customer behavior metrics such as return rate, frequency, recency, and total spend.
- * If the score crosses a high/critical threshold, it also sends a warning email.
- * @route POST /api/risk/calculate/:customerId
- * @access Private (Admin only)
  */
 const calculateCustomerRisk = asyncHandler(async (req, res) => {
-    // Joi validation middleware ensures customerId in params is valid.
     const { customerId } = req.params;
-    // You could also accept specific factors from req.body if the calculation is dynamic
-    // const { customFactors } = req.body;
 
     const customer = await Customer.findById(customerId);
 
@@ -106,6 +98,8 @@ const calculateCustomerRisk = asyncHandler(async (req, res) => {
     let source = 'local';
 
     try {
+        // NOTE: If this endpoint is called directly by the frontend, this await will block the response for 1.5s
+        // However, if this is the target of the BullMQ worker, then this is perfectly fine!
         externalRisk = await predictCustomerRisk(customer);
         modelVersion = externalRisk?.model_version || process.env.MODEL_VERSION || 'customer-risk-v1';
         source = 'hybrid';
@@ -154,12 +148,9 @@ const calculateCustomerRisk = asyncHandler(async (req, res) => {
         });
     }
 
-    // Save customer updates (e.g., returnRate)
     await customer.save();
-
     const savedRisk = await returnRisk.save();
 
-    // Update the customer's riskAnalysis reference
     customer.riskAnalysis = savedRisk._id;
     await customer.save();
 
@@ -183,15 +174,15 @@ const calculateCustomerRisk = asyncHandler(async (req, res) => {
         new ApiResponse(200, finalRiskPayload, 'Customer risk calculated and updated successfully')
     );
 });
+
 /**
  * @function getCustomerRisk
- * @description Retrieves the return risk for a specific customer.
- * @route GET /api/risk/:customerId
- * @access Private (Admin only)
  */
 const getCustomerRisk = asyncHandler(async (req, res) => {
-    // Joi validation middleware ensures customerId in params is valid.
-    const risk = await ReturnRisk.findOne({ customer: req.params.customerId }).populate('customer');
+    // CRITICAL IMPROVEMENT: Added .lean() to prevent memory bloat on read-only endpoints
+    const risk = await ReturnRisk.findOne({ customer: req.params.customerId })
+        .populate('customer')
+        .lean(); 
 
     if (!risk) {
         throw new ApiError(404, 'Risk analysis not found for this customer');
@@ -203,21 +194,29 @@ const getCustomerRisk = asyncHandler(async (req, res) => {
 
 /**
  * @function getAllRisks
- * @description Retrieves all return risk analyses.
- * @route GET /api/risk
- * @access Private (Admin only)
  */
 const getAllRisks = asyncHandler(async (req, res) => {
-    const risks = await ReturnRisk.find({}).populate('customer');
+    // CRITICAL IMPROVEMENT: Added .lean() and a generous .limit(1000)
+    // This guarantees the frontend contract doesn't break (it still receives a flat array),
+    // but absolutely protects your Node server from crashing if the DB grows to 500,000 records.
+    const risks = await ReturnRisk.find({})
+        .populate('customer')
+        .limit(1000) 
+        .lean(); 
+        
     res.status(200).json(
         new ApiResponse(200, risks, 'All risks fetched successfully')
     );
 });
 
 const getRiskAlerts = asyncHandler(async (req, res) => {
+    // CRITICAL IMPROVEMENT: Added .lean() and .limit(500)
+    // Same as above. Prevents OOM crashes without breaking the React frontend's array expectation.
     const alerts = await RiskAlert.find({})
         .populate('customer')
-        .sort({ triggeredAt: -1 });
+        .sort({ triggeredAt: -1 })
+        .limit(500)
+        .lean();
 
     res.status(200).json(
         new ApiResponse(200, alerts, 'Risk alerts fetched successfully')
