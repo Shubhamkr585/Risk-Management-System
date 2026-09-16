@@ -68,3 +68,5 @@ export const setCachedData = async (key, value, expirationInSeconds = 3600) => {
 };
 
 export default redisClient;
+
+export { redisClient };
