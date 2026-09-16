@@ -8,7 +8,7 @@ import mongoose from 'mongoose';
 
 // Connect to MongoDB if not already connected (useful if running worker as a separate process)
 if (mongoose.connection.readyState === 0) {
-  mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/risk-management');
+  // Connection handled by server.js
 }
 
 const redisOptions = {
